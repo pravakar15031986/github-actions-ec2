@@ -35,7 +35,7 @@ jobs:
         npm install -g pm2
         fi
 
-        REPO_URL="https://github.com/afkzoro/github-aws-ec2.git"
+        REPO_URL="https://github.com/pravakar15031986/github-actions-ec2.git"
         BRANCH="main"
         REPO_DIR="$HOME/github-aws-ec2"
 
@@ -57,3 +57,4 @@ jobs:
         echo "Starting/restarting application..."
         pm2 restart server.js || pm2 start server.js
         '
+
