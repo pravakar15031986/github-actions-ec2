@@ -10,40 +10,57 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
+      # ----------------------------
+      # SSH SETUP
+      # ----------------------------
       - name: Setup SSH Key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.EC2_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-      - name: Add EC2 to known_hosts
+      - name: Add EC2 Host to known_hosts
         run: |
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Create target directory on EC2
+      # ----------------------------
+      # PREPARE DIRECTORY ON EC2
+      # ----------------------------
+      - name: Prepare EC2 Directory
         run: |
-          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "sudo mkdir -p ${{ secrets.EC2_PATH }}"
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "
+            sudo mkdir -p ${{ secrets.EC2_PATH }};
+            sudo chown -R ${{ secrets.EC2_USER }}:${{ secrets.EC2_USER }} ${{ secrets.EC2_PATH }};
+            sudo chmod -R 775 ${{ secrets.EC2_PATH }};
+          "
 
-      - name: Sync project files to EC2
+      # ----------------------------
+      # RSYNC FILES TO EC2
+      # ----------------------------
+      - name: Upload Files via rsync
         run: |
-          rsync -av \
+          rsync -av -e "ssh -i ~/.ssh/id_rsa" \
+            --rsync-path="sudo rsync" \
             --exclude=".git" \
             --exclude=".github" \
             --exclude="node_modules" \
             ./ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:${{ secrets.EC2_PATH }}/
 
-      - name: Run install + build + PM2 on EC2
+      # ----------------------------
+      # INSTALL + BUILD + PM2
+      # ----------------------------
+      - name: Build & Restart PM2 on EC2
         run: |
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
             TARGET_DIR="${{ secrets.EC2_PATH }}"
 
-            echo "Fixing permissions..."
-            sudo chown -R $USER:$USER "$TARGET_DIR"
+            echo "Switch to project directory: $TARGET_DIR"
+            cd "$TARGET_DIR"
 
-            echo "Installing Node.js (v22)..."
+            echo "Installing Node.js 22 if missing..."
             if ! command -v node &>/dev/null; then
               curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
               sudo apt-get install -y nodejs
@@ -56,11 +73,13 @@ jobs:
               curl -fsSL https://get.pnpm.io/install.sh | sh -
             fi
 
-            cd "$TARGET_DIR"
+            echo "Install dependencies..."
             pnpm install --frozen-lockfile
+
+            echo "Build project..."
             pnpm run build
 
-            echo "Managing PM2..."
+            echo "Setup/Restart PM2"
             APP_NAME=$(basename "$TARGET_DIR")
 
             if ! command -v pm2 &>/dev/null; then
@@ -68,8 +87,10 @@ jobs:
             fi
 
             if pm2 list | grep -q "$APP_NAME"; then
+              echo "Restarting PM2 app: $APP_NAME"
               pm2 restart "$APP_NAME"
             else
+              echo "Starting new PM2 app: $APP_NAME"
               pm2 start ecosystem.config.js --name "$APP_NAME"
             fi
 
